@@ -56,6 +56,8 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [darkMode, setDarkMode] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const contentScrollRef = useRef<HTMLDivElement | null>(null);
+  const categorySectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   
   // Search Mode State
   const [searchMode, setSearchMode] = useState<SearchMode>('external');
@@ -751,6 +753,13 @@ function App() {
     setSelectedLinks(new Set()); // 退出批量编辑模式时清空选中项
   };
 
+  const startBatchEditForCategory = (categoryId: string) => {
+    if (!authToken) { setIsAuthOpen(true); return; }
+    setSelectedCategory(categoryId);
+    setSelectedLinks(new Set());
+    setIsBatchEditMode(true);
+  };
+
   const toggleLinkSelection = (linkId: string) => {
     setSelectedLinks(prev => {
       const newSet = new Set(prev);
@@ -1160,6 +1169,7 @@ function App() {
 
   // 开始排序
   const startSorting = (categoryId: string) => {
+    setSelectedCategory(categoryId);
     setIsSortingMode(categoryId);
   };
 
@@ -1313,6 +1323,53 @@ function App() {
       }
   };
 
+  const scrollToCategorySection = (categoryId: string, behavior: ScrollBehavior = 'smooth') => {
+    const container = contentScrollRef.current;
+    const section = categorySectionRefs.current[categoryId];
+    if (!container || !section) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const sectionRect = section.getBoundingClientRect();
+    const top = container.scrollTop + sectionRect.top - containerRect.top - 16;
+    container.scrollTo({ top: Math.max(0, top), behavior });
+  };
+
+  const handleContentScroll = () => {
+    if (searchQuery.trim() || isSortingMode || isBatchEditMode || isSortingPinned) return;
+
+    const container = contentScrollRef.current;
+    if (!container) return;
+
+    if (container.scrollTop < 48 && pinnedLinks.length > 0) {
+      if (selectedCategory !== 'all') setSelectedCategory('all');
+      return;
+    }
+
+    const markerTop = container.getBoundingClientRect().top + 96;
+    let currentId: string | null = null;
+    let currentTop = -Infinity;
+    let nearestBelowId: string | null = null;
+    let nearestBelowTop = Infinity;
+
+    Object.keys(categorySectionRefs.current).forEach((categoryId) => {
+      const section = categorySectionRefs.current[categoryId];
+      if (!section) return;
+      const top = section.getBoundingClientRect().top;
+      if (top <= markerTop && top > currentTop) {
+        currentTop = top;
+        currentId = categoryId;
+      } else if (top > markerTop && top < nearestBelowTop) {
+        nearestBelowTop = top;
+        nearestBelowId = categoryId;
+      }
+    });
+
+    const nextCategory = currentId || nearestBelowId;
+    if (nextCategory && nextCategory !== selectedCategory) {
+      setSelectedCategory(nextCategory);
+    }
+  };
+
   // --- Category Management & Security ---
 
   const handleCategoryClick = (cat: Category) => {
@@ -1339,13 +1396,23 @@ function App() {
           return;
       }
       
+      setSearchQuery('');
+      setIsSortingMode(null);
+      setIsBatchEditMode(false);
+      setSelectedLinks(new Set());
       setSelectedCategory(cat.id);
       setSidebarOpen(false);
+      requestAnimationFrame(() => scrollToCategorySection(cat.id));
   };
 
   const handleUnlockCategory = (catId: string) => {
       setUnlockedCategoryIds(prev => new Set(prev).add(catId));
+      setSearchQuery('');
+      setIsSortingMode(null);
+      setIsBatchEditMode(false);
+      setSelectedLinks(new Set());
       setSelectedCategory(catId);
+      requestAnimationFrame(() => scrollToCategorySection(catId));
   };
 
   const handleUpdateCategories = (newCats: Category[]) => {
@@ -1726,6 +1793,28 @@ function App() {
       });
   }, [links, categories, unlockedCategoryIds]);
 
+  const continuousCategoryGroups = useMemo(() => {
+    return categories
+      .filter(category => !category.parentId)
+      .map(parent => ({
+        parent,
+        children: categories.filter(category => category.parentId === parent.id)
+      }));
+  }, [categories]);
+
+  const getCategoryLinks = (categoryId: string) => {
+    if (isCategoryLocked(categoryId)) return [];
+    return links
+      .filter(link => !link.pinned && link.categoryId === categoryId)
+      .sort((a, b) => {
+        const aOrder = a.order !== undefined ? a.order : a.createdAt;
+        const bOrder = b.order !== undefined ? b.order : b.createdAt;
+        return aOrder - bOrder;
+      });
+  };
+
+  const showContinuousCategories = !searchQuery.trim() && !isSortingMode && !isBatchEditMode;
+
   const displayedLinks = useMemo(() => {
     let result = links;
     
@@ -1742,9 +1831,9 @@ function App() {
       );
     }
 
-    // Category Filter
-    if (selectedCategory !== 'all') {
-      // 获取当前分类及其所有子分类的ID
+    // Category Filter: normal scrolling mode shows all categories continuously.
+    // Keep category filtering only for the focused edit/sort view; search is global.
+    if (!searchQuery.trim() && selectedCategory !== 'all') {
       const subCategoryIds = categories.filter(c => c.parentId === selectedCategory).map(c => c.id);
       result = result.filter(l => l.categoryId === selectedCategory || subCategoryIds.includes(l.categoryId));
     }
@@ -1759,56 +1848,6 @@ function App() {
       return aOrder - bOrder;
     });
   }, [links, selectedCategory, searchQuery, categories, unlockedCategoryIds]);
-
-  // 计算其他目录的搜索结果
-  const otherCategoryResults = useMemo(() => {
-    if (!searchQuery.trim() || selectedCategory === 'all') {
-      return [];
-    }
-
-    const q = searchQuery.toLowerCase();
-    
-    // 获取其他目录中匹配的链接
-    const otherLinks = links.filter(link => {
-      // 排除当前目录的链接
-      if (link.categoryId === selectedCategory) {
-        return false;
-      }
-      
-      // 排除锁定的目录
-      if (isCategoryLocked(link.categoryId)) {
-        return false;
-      }
-      
-      // 搜索匹配
-      return (
-        link.title.toLowerCase().includes(q) || 
-        link.url.toLowerCase().includes(q) ||
-        (link.description && link.description.toLowerCase().includes(q))
-      );
-    });
-
-    // 按目录分组
-    const groupedByCategory = otherLinks.reduce((acc, link) => {
-      if (!acc[link.categoryId]) {
-        acc[link.categoryId] = [];
-      }
-      acc[link.categoryId].push(link);
-      return acc;
-    }, {} as Record<string, LinkItem[]>);
-
-    // 对每个目录内的链接进行排序
-    Object.keys(groupedByCategory).forEach(categoryId => {
-      groupedByCategory[categoryId].sort((a, b) => {
-        const aOrder = a.order !== undefined ? a.order : a.createdAt;
-        const bOrder = b.order !== undefined ? b.order : b.createdAt;
-        return aOrder - bOrder;
-      });
-    });
-
-    return groupedByCategory;
-  }, [links, selectedCategory, searchQuery, categories, unlockedCategoryIds]);
-
 
   // --- Render Components ---
 
@@ -1887,7 +1926,9 @@ function App() {
     const isSelected = selectedLinks.has(link.id);
     
     // 检查是否在有二级分类的一级分类页面下，且该站点未归属到二级分类
-    const isUnassignedHighlight = selectedCategory !== 'all' && 
+    const isUnassignedHighlight = !showContinuousCategories &&
+                                 !searchQuery.trim() &&
+                                 selectedCategory !== 'all' && 
                                  !categories.find(c => c.id === selectedCategory)?.parentId && 
                                  link.categoryId === selectedCategory && 
                                  categories.some(c => c.parentId === selectedCategory);
@@ -1999,6 +2040,85 @@ function App() {
           </div>
         )}
       </div>
+    );
+  };
+
+  const renderContinuousCategorySection = (category: Category, isSubCategory = false) => {
+    const locked = isCategoryLocked(category.id);
+    const categoryLinks = getCategoryLinks(category.id);
+
+    return (
+      <section key={category.id} className={isSubCategory ? 'pt-2' : ''}>
+        <div
+          ref={(node) => {
+            categorySectionRefs.current[category.id] = node;
+          }}
+          className="h-0"
+        />
+
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2 min-w-0">
+            {locked ? (
+              <Lock size={isSubCategory ? 15 : 18} className="text-amber-500 shrink-0" />
+            ) : (
+              <Icon name={category.icon} size={isSubCategory ? 15 : 18} className="text-blue-500 shrink-0" />
+            )}
+            {isSubCategory ? (
+              <h3 className="text-sm font-semibold text-slate-600 dark:text-slate-300 truncate">
+                {category.name}
+              </h3>
+            ) : (
+              <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100 truncate">
+                {category.name}
+              </h2>
+            )}
+            {!locked && (
+              <span className="px-2 py-0.5 text-xs font-semibold bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 rounded-full">
+                {categoryLinks.length}
+              </span>
+            )}
+          </div>
+
+          {!locked && authToken && (
+            <div className="flex gap-2 shrink-0">
+              <button
+                onClick={() => startBatchEditForCategory(category.id)}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition-colors"
+              >
+                批量编辑
+              </button>
+              <button
+                onClick={() => startSorting(category.id)}
+                className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition-colors"
+              >
+                <GripVertical size={14} />
+                <span>排序</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {locked ? (
+          <button
+            onClick={() => handleCategoryClick(category)}
+            className="w-full rounded-xl border border-dashed border-amber-200 dark:border-amber-800/60 bg-amber-50/60 dark:bg-amber-900/10 py-6 text-sm text-amber-600 dark:text-amber-400"
+          >
+            该目录已锁定，点击解锁
+          </button>
+        ) : categoryLinks.length > 0 ? (
+          <div className={`grid gap-3 ${
+            siteSettings.cardStyle === 'detailed'
+              ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6'
+              : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'
+          }`}>
+            {categoryLinks.map(link => renderLinkCard(link))}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-200 dark:border-slate-700 py-6 text-center text-sm text-slate-400">
+            暂无内容
+          </div>
+        )}
+      </section>
     );
   };
 
@@ -2118,7 +2238,17 @@ function App() {
         >
             <div className="px-4">
               <button
-                onClick={() => { setSelectedCategory('all'); setSidebarOpen(false); }}
+                onClick={() => {
+                  setSearchQuery('');
+                  setIsSortingMode(null);
+                  setIsBatchEditMode(false);
+                  setSelectedLinks(new Set());
+                  setSelectedCategory('all');
+                  setSidebarOpen(false);
+                  requestAnimationFrame(() => {
+                    contentScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                  });
+                }}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
                   selectedCategory === 'all' 
                     ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-medium' 
@@ -2500,10 +2630,14 @@ function App() {
         </header>
 
         {/* Content Scroll Area */}
-        <div className="flex-1 overflow-y-auto p-4 lg:p-8 space-y-8">
+        <div
+          ref={contentScrollRef}
+          onScroll={handleContentScroll}
+          className="flex-1 overflow-y-auto p-4 lg:p-8 space-y-8"
+        >
             
             {/* 1. Pinned Area (Custom Top Area) */}
-            {pinnedLinks.length > 0 && !searchQuery && (selectedCategory === 'all') && (
+            {pinnedLinks.length > 0 && !searchQuery && !isSortingMode && !isBatchEditMode && (
                 <section>
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
@@ -2577,8 +2711,24 @@ function App() {
                 </section>
             )}
 
-            {/* 2. Main Grid */}
-            {(selectedCategory !== 'all' || searchQuery) && (
+            {/* 2. Continuous Category Sections */}
+            {showContinuousCategories && (
+              <div className="space-y-10">
+                {continuousCategoryGroups.map(({ parent, children }) => (
+                  <div key={parent.id} className="space-y-6">
+                    {renderContinuousCategorySection(parent)}
+                    {!isCategoryLocked(parent.id) && children.map(child => (
+                      <div key={child.id} className="pl-0 sm:pl-3">
+                        {renderContinuousCategorySection(child, true)}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* 3. Focused Search / Edit / Sort Grid */}
+            {!showContinuousCategories && (
             <section>
                  {(!pinnedLinks.length && !searchQuery && selectedCategory === 'all') && (
                     <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg flex items-center justify-between">
@@ -2595,9 +2745,11 @@ function App() {
                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                      <div className="flex items-center flex-wrap gap-y-2">
                          <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 mr-4">
-                             {selectedCategory === 'all' 
-                                ? (searchQuery ? '搜索结果' : '所有链接') 
-                                : (() => {
+                             {searchQuery.trim()
+                                ? '搜索结果'
+                                : selectedCategory === 'all'
+                                  ? '所有链接'
+                                  : (() => {
                                     const currentCat = categories.find(c => c.id === selectedCategory);
                                     const primaryCat = currentCat?.parentId 
                                       ? categories.find(c => c.id === currentCat.parentId) 
@@ -2651,13 +2803,13 @@ function App() {
                                   })()
                              }
                          </h2>
-                         {selectedCategory !== 'all' && (
+                         {(searchQuery.trim() || selectedCategory !== 'all') && (
                            <span className="px-2 py-0.5 text-xs font-semibold bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 rounded-full">
                              {displayedLinks.length}
                            </span>
                          )}
                      </div>
-                     {selectedCategory !== 'all' && !isCategoryLocked(selectedCategory) && (
+                     {!searchQuery.trim() && selectedCategory !== 'all' && !isCategoryLocked(selectedCategory) && (
                          isSortingMode === selectedCategory ? (
                              <div className="flex gap-2">
                                  <button 
@@ -2769,7 +2921,7 @@ function App() {
 
                  {displayedLinks.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-20 text-slate-400 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
-                        {isCategoryLocked(selectedCategory) ? (
+                        {!searchQuery.trim() && selectedCategory !== 'all' && isCategoryLocked(selectedCategory) ? (
                             <>
                                 <Lock size={40} className="text-amber-400 mb-4" />
                                 <p>该目录已锁定</p>
@@ -2779,7 +2931,7 @@ function App() {
                             <>
                                 <Search size={40} className="opacity-30 mb-4" />
                                 <p>没有找到相关内容</p>
-                                {selectedCategory !== 'all' && (
+                                {!searchQuery.trim() && selectedCategory !== 'all' && (
                                     <button onClick={() => setIsModalOpen(true)} className="mt-4 text-blue-500 hover:underline">添加一个?</button>
                                 )}
                             </>
@@ -2820,58 +2972,6 @@ function App() {
             </section>
             )}
 
-            {/* 其他目录搜索结果区域 */}
-            {searchQuery.trim() && selectedCategory !== 'all' && (
-              <section className="mt-8 pt-8 border-t-2 border-slate-200 dark:border-slate-700">
-                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2 mb-4">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-folder-search">
-                    <circle cx="11" cy="11" r="8"></circle>
-                    <path d="m21 21-4.35-4.35"></path>
-                    <path d="M11 11h.01"></path>
-                  </svg>
-                  其他目录搜索结果
-                  <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-300 rounded-full">
-                    {Object.values(otherCategoryResults).flat().length}
-                  </span>
-                </h2>
-
-                {Object.keys(otherCategoryResults).length > 0 ? (
-                  Object.entries(otherCategoryResults).map(([categoryId, links]) => {
-                    const category = categories.find(c => c.id === categoryId);
-                    if (!category) return null;
-
-                    return (
-                      <div key={categoryId} className="mb-6 last:mb-0">
-                        <div className="flex items-center gap-2 mb-3">
-                          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                            {category.name}
-                          </h3>
-                          <span className="px-2 py-0.5 text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400 rounded-full">
-                            {links.length}
-                          </span>
-                        </div>
-
-                        <div className={`grid gap-3 ${
-                          siteSettings.cardStyle === 'detailed' 
-                            ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6' 
-                            : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'
-                        }`}>
-                          {links.map(link => renderLinkCard(link))}
-                        </div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-12 text-slate-400 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-30 mb-4">
-                      <circle cx="11" cy="11" r="8"></circle>
-                      <path d="m21 21-4.35-4.35"></path>
-                    </svg>
-                    <p className="text-sm">其他目录中没有找到相关内容</p>
-                  </div>
-                )}
-              </section>
-            )}
         </div>
       </main>
 
