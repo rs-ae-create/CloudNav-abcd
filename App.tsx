@@ -748,20 +748,17 @@ function App() {
   };
 
   // --- Batch Edit Functions ---
-  const finishCategoryEditMode = () => {
-    const categoryId = selectedCategory;
+  const finishGlobalEditMode = () => {
     setIsBatchEditMode(false);
     setIsSortingMode(null);
     setSelectedLinks(new Set());
-    requestAnimationFrame(() => scrollToCategorySection(categoryId));
   };
 
-  const startCategoryEditMode = (categoryId: string) => {
+  const startGlobalEditMode = () => {
     if (!authToken) { setIsAuthOpen(true); return; }
-    setSelectedCategory(categoryId);
     setSelectedLinks(new Set());
     setIsBatchEditMode(true);
-    setIsSortingMode(categoryId);
+    setIsSortingMode(null);
   };
 
   const toggleLinkSelection = (linkId: string) => {
@@ -787,7 +784,7 @@ function App() {
     if (confirm(`确定要删除选中的 ${selectedLinks.size} 个链接吗？`)) {
       const newLinks = links.filter(link => !selectedLinks.has(link.id));
       updateData(newLinks, categories);
-      finishCategoryEditMode();
+      setSelectedLinks(new Set());
     }
   };
 
@@ -803,12 +800,14 @@ function App() {
       selectedLinks.has(link.id) ? { ...link, categoryId: targetCategoryId } : link
     );
     updateData(newLinks, categories);
-    finishCategoryEditMode();
+    setSelectedLinks(new Set());
   };
 
   const handleSelectAll = () => {
-    // 获取当前显示的所有链接ID
-    const currentLinkIds = displayedLinks.map(link => link.id);
+    // 全局编辑模式下，全选所有已解锁分类中的非置顶链接
+    const currentLinkIds = links
+      .filter(link => !link.pinned && !isCategoryLocked(link.categoryId))
+      .map(link => link.id);
     
     // 如果已选中的链接数量等于当前显示的链接数量，则取消全选
     if (selectedLinks.size === currentLinkIds.length && currentLinkIds.every(id => selectedLinks.has(id))) {
@@ -1078,17 +1077,18 @@ function App() {
   };
 
   // 拖拽结束事件处理函数
-  const handleDragEnd = (event: DragEndEvent) => {
+  const handleCategoryDragEnd = (event: DragEndEvent, categoryId: string) => {
     const { active, over } = event;
 
     if (over && active.id !== over.id) {
-      // 获取当前分类下的所有链接（包括子分类）
-      const subCategoryIds = categories.filter(c => c.parentId === selectedCategory).map(c => c.id);
-      const categoryLinks = links.filter(link => 
-        selectedCategory === 'all' || 
-        link.categoryId === selectedCategory || 
-        subCategoryIds.includes(link.categoryId)
-      );
+      // 全局编辑模式下，每个分类只在自己的卡片集合内排序
+      const categoryLinks = links
+        .filter(link => !link.pinned && link.categoryId === categoryId)
+        .sort((a, b) => {
+          const aOrder = a.order !== undefined ? a.order : a.createdAt;
+          const bOrder = b.order !== undefined ? b.order : b.createdAt;
+          return aOrder - bOrder;
+        });
       
       // 找到被拖拽元素和目标元素的索引
       const activeIndex = categoryLinks.findIndex(link => link.id === active.id);
@@ -1106,9 +1106,6 @@ function App() {
           }
           return link;
         });
-        
-        // 按照order字段重新排序
-        updatedLinks.sort((a, b) => (a.order || 0) - (b.order || 0));
         
         updateData(updatedLinks, categories);
       }
@@ -1319,7 +1316,7 @@ function App() {
   };
 
   const handleContentScroll = () => {
-    if (searchQuery.trim() || isSortingMode || isBatchEditMode || isSortingPinned) return;
+    if (searchQuery.trim() || isSortingMode || isSortingPinned) return;
 
     const container = contentScrollRef.current;
     if (!container) return;
@@ -1382,8 +1379,7 @@ function App() {
       
       setSearchQuery('');
       setIsSortingMode(null);
-      setIsBatchEditMode(false);
-      setSelectedLinks(new Set());
+      if (!isBatchEditMode) setSelectedLinks(new Set());
       setSelectedCategory(cat.id);
       setSidebarOpen(false);
       requestAnimationFrame(() => scrollToCategorySection(cat.id));
@@ -1393,8 +1389,7 @@ function App() {
       setUnlockedCategoryIds(prev => new Set(prev).add(catId));
       setSearchQuery('');
       setIsSortingMode(null);
-      setIsBatchEditMode(false);
-      setSelectedLinks(new Set());
+      if (!isBatchEditMode) setSelectedLinks(new Set());
       setSelectedCategory(catId);
       requestAnimationFrame(() => scrollToCategorySection(catId));
   };
@@ -1797,7 +1792,7 @@ function App() {
       });
   };
 
-  const showContinuousCategories = !searchQuery.trim() && !isSortingMode && !isBatchEditMode;
+  const showContinuousCategories = !searchQuery.trim();
 
   const displayedLinks = useMemo(() => {
     let result = links;
@@ -1918,8 +1913,9 @@ function App() {
     );
   };
 
-  const renderLinkCard = (link: LinkItem) => {
+  const renderLinkCard = (link: LinkItem, selectableInBatch = true) => {
     const isSelected = selectedLinks.has(link.id);
+    const batchSelectable = isBatchEditMode && selectableInBatch;
     
     // 检查是否在有二级分类的一级分类页面下，且该站点未归属到二级分类
     const isUnassignedHighlight = !showContinuousCategories &&
@@ -1941,16 +1937,16 @@ function App() {
             : isUnassignedHighlight
               ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50 hover:bg-amber-100 dark:hover:bg-amber-900/30'
               : 'bg-white dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-900/20 border-slate-200 dark:border-slate-700'
-        } ${isBatchEditMode ? 'cursor-pointer' : ''} ${
+        } ${batchSelectable ? 'cursor-pointer' : ''} ${
           isDetailedView 
             ? 'flex flex-col rounded-2xl border shadow-sm p-4 min-h-[100px] hover:border-blue-400 dark:hover:border-blue-500' 
             : 'flex items-center justify-between rounded-xl border shadow-sm p-3 hover:border-blue-300 dark:hover:border-blue-600'
         }`}
-        onClick={() => isBatchEditMode && toggleLinkSelection(link.id)}
+        onClick={() => batchSelectable && toggleLinkSelection(link.id)}
         onContextMenu={(e) => handleContextMenu(e, link)}
       >
         {/* 链接内容 - 在批量编辑模式下不使用a标签 */}
-        {isBatchEditMode ? (
+        {batchSelectable ? (
           <div className={`flex flex-1 min-w-0 overflow-hidden h-full ${
             isDetailedView ? 'flex-col' : 'items-center'
           }`}>
@@ -2020,7 +2016,7 @@ function App() {
         )}
 
         {/* Hover Actions (Absolute Right) - 在批量编辑模式下隐藏 */}
-        {!isBatchEditMode && (
+        {!batchSelectable && (
           <div className={`flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-blue-50 dark:bg-blue-900/20 backdrop-blur-sm rounded-md p-1 absolute ${
             isDetailedView ? 'top-3 right-3' : 'top-1/2 -translate-y-1/2 right-2'
           }`}>
@@ -2075,14 +2071,6 @@ function App() {
             )}
           </div>
 
-          {!locked && authToken && (
-            <button
-              onClick={() => startCategoryEditMode(category.id)}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition-colors"
-            >
-              编辑
-            </button>
-          )}
         </div>
 
         {locked ? (
@@ -2093,13 +2081,36 @@ function App() {
             该目录已锁定，点击解锁
           </button>
         ) : categoryLinks.length > 0 ? (
-          <div className={`grid gap-3 ${
-            siteSettings.cardStyle === 'detailed'
-              ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6'
-              : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'
-          }`}>
-            {categoryLinks.map(link => renderLinkCard(link))}
-          </div>
+          isBatchEditMode ? (
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCorners}
+              onDragEnd={(event) => handleCategoryDragEnd(event, category.id)}
+            >
+              <SortableContext
+                items={categoryLinks.map(link => link.id)}
+                strategy={rectSortingStrategy}
+              >
+                <div className={`grid gap-3 ${
+                  siteSettings.cardStyle === 'detailed'
+                    ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6'
+                    : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'
+                }`}>
+                  {categoryLinks.map(link => (
+                    <SortableLinkCard key={link.id} link={link} />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          ) : (
+            <div className={`grid gap-3 ${
+              siteSettings.cardStyle === 'detailed'
+                ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6'
+                : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'
+            }`}>
+              {categoryLinks.map(link => renderLinkCard(link))}
+            </div>
+          )
         ) : (
           <div className="rounded-xl border border-dashed border-slate-200 dark:border-slate-700 py-6 text-center text-sm text-slate-400">
             暂无内容
@@ -2515,6 +2526,7 @@ function App() {
                 
                 <input
                   type="text"
+                  disabled={isBatchEditMode}
                   placeholder={
                     searchMode === 'internal' 
                       ? "搜索站内内容..." 
@@ -2560,6 +2572,73 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* 全局编辑：整个连续分类页只保留这一处编辑入口 */}
+            {!searchQuery.trim() && (
+              <div className={`${isMobileSearchOpen ? 'hidden' : 'flex'} items-center gap-1`}>
+                {isBatchEditMode ? (
+                  <>
+                    <button
+                      onClick={finishGlobalEditMode}
+                      className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-full transition-colors"
+                      title="完成编辑"
+                    >
+                      完成
+                    </button>
+                    <button
+                      onClick={handleSelectAll}
+                      className="px-3 py-1.5 bg-slate-600 hover:bg-slate-700 text-white text-xs font-medium rounded-full transition-colors"
+                      title="全选/取消全选"
+                    >
+                      {(() => {
+                        const editableCount = links.filter(link => !link.pinned && !isCategoryLocked(link.categoryId)).length;
+                        return selectedLinks.size === editableCount && editableCount > 0 ? '取消全选' : '全选';
+                      })()}
+                    </button>
+                    <div className="relative group">
+                      <button
+                        disabled={selectedLinks.size === 0}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium rounded-full transition-colors"
+                        title="移动选中"
+                      >
+                        移动
+                      </button>
+                      {selectedLinks.size > 0 && (
+                        <div className="absolute top-full right-0 mt-1 w-56 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 z-50 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 overflow-hidden max-h-[500px] overflow-y-auto no-scrollbar">
+                          {continuousCategoryGroups.flatMap(({ parent, children }) => [parent, ...children]).map(cat => (
+                            <button
+                              key={cat.id}
+                              onClick={() => handleBatchMove(cat.id)}
+                              className="w-full text-left px-4 py-2.5 text-xs text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 border-b border-slate-100 dark:border-slate-700 last:border-0 transition-colors"
+                            >
+                              {cat.parentId
+                                ? `${categories.find(parent => parent.id === cat.parentId)?.name || ''} / ${cat.name}`
+                                : cat.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleBatchDelete}
+                      disabled={selectedLinks.size === 0}
+                      className="px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium rounded-full transition-colors"
+                      title="删除选中"
+                    >
+                      删除
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={startGlobalEditMode}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition-colors"
+                    title="编辑全部分类"
+                  >
+                    编辑
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* 视图切换控制器 - 移动端：搜索框展开时隐藏，桌面端始终显示 */}
             <div className={`${isMobileSearchOpen ? 'hidden' : 'flex'} lg:flex items-center bg-slate-100 dark:bg-slate-700 rounded-full p-1`}>
               <button
@@ -2624,7 +2703,7 @@ function App() {
         >
             
             {/* 1. Pinned Area (Custom Top Area) */}
-            {pinnedLinks.length > 0 && !searchQuery && !isSortingMode && !isBatchEditMode && (
+            {pinnedLinks.length > 0 && !searchQuery && !isSortingMode && (
                 <section>
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
@@ -2692,7 +2771,7 @@ function App() {
                             ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6' 
                             : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'
                         }`}>
-                            {pinnedLinks.map(link => renderLinkCard(link))}
+                            {pinnedLinks.map(link => renderLinkCard(link, false))}
                         </div>
                     )}
                 </section>
@@ -2799,7 +2878,7 @@ function App() {
                      {!searchQuery.trim() && selectedCategory !== 'all' && !isCategoryLocked(selectedCategory) && isBatchEditMode && isSortingMode === selectedCategory && (
                          <div className="flex flex-wrap justify-end gap-2">
                              <button
-                                 onClick={finishCategoryEditMode}
+                                 onClick={finishGlobalEditMode}
                                  className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-full transition-colors"
                              >
                                  完成
@@ -2889,7 +2968,7 @@ function App() {
                         <DndContext
                             sensors={sensors}
                             collisionDetection={closestCorners}
-                            onDragEnd={handleDragEnd}
+                            onDragEnd={(event) => handleCategoryDragEnd(event, selectedCategory)}
                         >
                             <SortableContext
                                 items={displayedLinks.map(link => link.id)}
