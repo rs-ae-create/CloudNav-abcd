@@ -748,16 +748,20 @@ function App() {
   };
 
   // --- Batch Edit Functions ---
-  const toggleBatchEditMode = () => {
-    setIsBatchEditMode(!isBatchEditMode);
-    setSelectedLinks(new Set()); // 退出批量编辑模式时清空选中项
+  const finishCategoryEditMode = () => {
+    const categoryId = selectedCategory;
+    setIsBatchEditMode(false);
+    setIsSortingMode(null);
+    setSelectedLinks(new Set());
+    requestAnimationFrame(() => scrollToCategorySection(categoryId));
   };
 
-  const startBatchEditForCategory = (categoryId: string) => {
+  const startCategoryEditMode = (categoryId: string) => {
     if (!authToken) { setIsAuthOpen(true); return; }
     setSelectedCategory(categoryId);
     setSelectedLinks(new Set());
     setIsBatchEditMode(true);
+    setIsSortingMode(categoryId);
   };
 
   const toggleLinkSelection = (linkId: string) => {
@@ -783,8 +787,7 @@ function App() {
     if (confirm(`确定要删除选中的 ${selectedLinks.size} 个链接吗？`)) {
       const newLinks = links.filter(link => !selectedLinks.has(link.id));
       updateData(newLinks, categories);
-      setSelectedLinks(new Set());
-      setIsBatchEditMode(false);
+      finishCategoryEditMode();
     }
   };
 
@@ -800,8 +803,7 @@ function App() {
       selectedLinks.has(link.id) ? { ...link, categoryId: targetCategoryId } : link
     );
     updateData(newLinks, categories);
-    setSelectedLinks(new Set());
-    setIsBatchEditMode(false);
+    finishCategoryEditMode();
   };
 
   const handleSelectAll = () => {
@@ -1165,24 +1167,6 @@ function App() {
         updateData(updatedLinks, categories);
       }
     }
-  };
-
-  // 开始排序
-  const startSorting = (categoryId: string) => {
-    setSelectedCategory(categoryId);
-    setIsSortingMode(categoryId);
-  };
-
-  // 保存排序
-  const saveSorting = () => {
-    // 在保存排序时，确保将当前排序后的数据保存到服务器和本地存储
-    updateData(links, categories);
-    setIsSortingMode(null);
-  };
-
-  // 取消排序
-  const cancelSorting = () => {
-    setIsSortingMode(null);
   };
 
   // 保存置顶链接排序
@@ -1861,6 +1845,7 @@ function App() {
       transition,
       isDragging,
     } = useSortable({ id: link.id });
+    const isSelected = selectedLinks.has(link.id);
     
     // 根据视图模式决定卡片样式
     const isDetailedView = siteSettings.cardStyle === 'detailed';
@@ -1876,20 +1861,31 @@ function App() {
       <div
         ref={setNodeRef}
         style={style}
-        className={`group relative transition-all duration-200 cursor-grab active:cursor-grabbing min-w-0 max-w-full overflow-hidden hover:shadow-lg hover:shadow-green-100/50 dark:hover:shadow-green-900/20 ${
-          isSortingMode || isSortingPinned
-            ? 'bg-green-20 dark:bg-green-900/30 border-green-200 dark:border-green-800' 
+        className={`group relative transition-all duration-200 cursor-pointer min-w-0 max-w-full overflow-hidden hover:shadow-lg hover:shadow-green-100/50 dark:hover:shadow-green-900/20 ${
+          isSelected
+            ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-400 dark:border-blue-600'
+            : isSortingMode || isSortingPinned
+            ? 'bg-green-20 dark:bg-green-900/30 border-green-200 dark:border-green-800'
             : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
         } ${isDragging ? 'shadow-2xl scale-105' : ''} ${
           isDetailedView 
             ? 'flex flex-col rounded-2xl border shadow-sm p-4 min-h-[100px] hover:border-green-400 dark:hover:border-green-500' 
             : 'flex items-center rounded-xl border shadow-sm hover:border-green-300 dark:hover:border-green-600'
         }`}
-        {...attributes}
-        {...listeners}
+        onClick={() => isBatchEditMode && toggleLinkSelection(link.id)}
       >
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          onClick={(e) => e.stopPropagation()}
+          className="absolute top-2 right-2 z-10 p-1 rounded-md text-slate-400 hover:text-blue-500 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-grab active:cursor-grabbing"
+          title="拖拽排序"
+        >
+          <GripVertical size={16} />
+        </button>
         {/* 链接内容 - 移除a标签，改为div防止点击跳转 */}
-        <div className={`flex flex-1 min-w-0 overflow-hidden ${
+        <div className={`flex flex-1 min-w-0 overflow-hidden pr-7 ${
           isDetailedView ? 'flex-col' : 'items-center gap-3'
         }`}>
           {/* 第一行：图标和标题水平排列 */}
@@ -2080,21 +2076,12 @@ function App() {
           </div>
 
           {!locked && authToken && (
-            <div className="flex gap-2 shrink-0">
-              <button
-                onClick={() => startBatchEditForCategory(category.id)}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition-colors"
-              >
-                批量编辑
-              </button>
-              <button
-                onClick={() => startSorting(category.id)}
-                className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition-colors"
-              >
-                <GripVertical size={14} />
-                <span>排序</span>
-              </button>
-            </div>
+            <button
+              onClick={() => startCategoryEditMode(category.id)}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition-colors"
+            >
+              编辑
+            </button>
           )}
         </div>
 
@@ -2809,113 +2796,73 @@ function App() {
                            </span>
                          )}
                      </div>
-                     {!searchQuery.trim() && selectedCategory !== 'all' && !isCategoryLocked(selectedCategory) && (
-                         isSortingMode === selectedCategory ? (
-                             <div className="flex gap-2">
-                                 <button 
-                                     onClick={saveSorting}
-                                     className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-full transition-colors"
-                                     title="保存顺序"
-                                 >
-                                     <Save size={14} />
-                                     <span>保存顺序</span>
-                                 </button>
-                                 <button 
-                                     onClick={cancelSorting}
-                                     className="px-3 py-1.5 bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs font-medium rounded-full hover:bg-slate-300 dark:hover:bg-slate-600 transition-all"
-                                     title="取消排序"
-                                 >
-                                     取消
-                                 </button>
+                     {!searchQuery.trim() && selectedCategory !== 'all' && !isCategoryLocked(selectedCategory) && isBatchEditMode && isSortingMode === selectedCategory && (
+                         <div className="flex flex-wrap justify-end gap-2">
+                             <button
+                                 onClick={finishCategoryEditMode}
+                                 className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-full transition-colors"
+                             >
+                                 完成
+                             </button>
+                             <button
+                                 onClick={handleSelectAll}
+                                 className="flex items-center gap-1 px-3 py-1.5 bg-slate-600 hover:bg-slate-700 text-white text-xs font-medium rounded-full transition-colors"
+                                 title="全选/取消全选"
+                             >
+                                 <CheckSquare size={14} />
+                                 <span>{selectedLinks.size === displayedLinks.length ? '取消全选' : '全选'}</span>
+                             </button>
+                             <button
+                                 onClick={handleBatchDelete}
+                                 disabled={selectedLinks.size === 0}
+                                 className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium rounded-full transition-colors"
+                                 title="删除选中"
+                             >
+                                 <Trash2 size={14} />
+                                 <span>删除</span>
+                             </button>
+                             <div className="relative group">
+                                  <button
+                                      disabled={selectedLinks.size === 0}
+                                      className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium rounded-full transition-colors"
+                                      title="移动选中"
+                                  >
+                                      <Upload size={14} />
+                                      <span>移动</span>
+                                  </button>
+                                  {selectedLinks.size > 0 && (
+                                    <div className="absolute top-full right-0 mt-1 w-56 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 z-20 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 overflow-hidden max-h-[500px] overflow-y-auto no-scrollbar">
+                                        {(() => {
+                                          const flattened = [];
+                                          const parents = categories.filter(c => !c.parentId);
+
+                                          for (const parent of parents) {
+                                            if (parent.id !== selectedCategory) {
+                                              flattened.push({ id: parent.id, displayName: parent.name });
+                                            }
+
+                                            const children = categories.filter(c => c.parentId === parent.id);
+                                            for (const child of children) {
+                                              if (child.id !== selectedCategory) {
+                                                flattened.push({ id: child.id, displayName: `${parent.name} / ${child.name}` });
+                                              }
+                                            }
+                                          }
+
+                                          return flattened.map(cat => (
+                                            <button
+                                                key={cat.id}
+                                                onClick={() => handleBatchMove(cat.id)}
+                                                className="w-full text-left px-4 py-2.5 text-xs text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 border-b border-slate-100 dark:border-slate-700 last:border-0 transition-colors"
+                                            >
+                                                {cat.displayName}
+                                            </button>
+                                          ));
+                                        })()}
+                                    </div>
+                                  )}
                              </div>
-                         ) : (
-                             <div className="flex gap-2">
-                                 <button 
-                                     onClick={toggleBatchEditMode}
-                                     className={`flex items-center gap-1 px-3 py-1.5 text-white text-xs font-medium rounded-full transition-colors ${
-                                         isBatchEditMode 
-                                             ? 'bg-red-600 hover:bg-red-700' 
-                                             : 'bg-blue-600 hover:bg-blue-700'
-                                     }`}
-                                     title={isBatchEditMode ? "退出批量编辑" : "批量编辑"}
-                                 >
-                                     {isBatchEditMode ? '取消' : '批量编辑'}
-                                 </button>
-                                 {isBatchEditMode ? (
-                                     <>
-                                         <button 
-                                             onClick={handleBatchDelete}
-                                             className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded-full transition-colors"
-                                             title="批量删除"
-                                         >
-                                             <Trash2 size={14} />
-                                             <span>批量删除</span>
-                                         </button>
-                                         <button 
-                                             onClick={handleSelectAll}
-                                             className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-full transition-colors"
-                                             title="全选/取消全选"
-                                         >
-                                             <CheckSquare size={14} />
-                                             <span>{selectedLinks.size === displayedLinks.length ? '取消全选' : '全选'}</span>
-                                         </button>
-                                         <div className="relative group">
-                                              <button 
-                                                  className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition-colors"
-                                                  title="批量移动"
-                                              >
-                                                  <Upload size={14} />
-                                                  <span>批量移动</span>
-                                              </button>
-                                              <div className="absolute top-full right-0 mt-1 w-56 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 z-20 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 overflow-hidden max-h-[500px] overflow-y-auto no-scrollbar">
-                                                  {(() => {
-                                                    const flattened = [];
-                                                    const parents = categories.filter(c => !c.parentId);
-                                                    
-                                                    for (const parent of parents) {
-                                                      if (parent.id !== selectedCategory) {
-                                                        flattened.push({
-                                                          id: parent.id,
-                                                          displayName: parent.name
-                                                        });
-                                                      }
-                                                      
-                                                      const children = categories.filter(c => c.parentId === parent.id);
-                                                      for (const child of children) {
-                                                        if (child.id !== selectedCategory) {
-                                                          flattened.push({
-                                                            id: child.id,
-                                                            displayName: `${parent.name} / ${child.name}`
-                                                          });
-                                                        }
-                                                      }
-                                                    }
-                                                    
-                                                    return flattened.map(cat => (
-                                                      <button
-                                                          key={cat.id}
-                                                          onClick={() => handleBatchMove(cat.id)}
-                                                          className="w-full text-left px-4 py-2.5 text-xs text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 border-b border-slate-100 dark:border-slate-700 last:border-0 transition-colors"
-                                                      >
-                                                          {cat.displayName}
-                                                      </button>
-                                                    ));
-                                                  })()}
-                                              </div>
-                                          </div>
-                                     </>
-                                 ) : (
-                                     <button 
-                                         onClick={() => startSorting(selectedCategory)}
-                                         className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition-colors"
-                                         title="排序"
-                                     >
-                                         <GripVertical size={14} />
-                                         <span>排序</span>
-                                     </button>
-                                 )}
-                             </div>
-                         )
+                         </div>
                      )}
                  </div>
 
